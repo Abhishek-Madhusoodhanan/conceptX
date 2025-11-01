@@ -1,0 +1,21 @@
+Django
+djangorestframework
+django-cors-headers
+python-dotenv
+
+# LangChain
+langchain
+langchain-google-genai
+langchain-community
+
+# Vector Store & Search
+faiss-cpu
+duckduckgo-search
+
+# Document Processing
+pypdf
+python-docx
+Pillow
+
+# PDF Generation
+reportlab
