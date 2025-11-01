@@ -1,4 +1,4 @@
-echo ".env
+.env
 backend/.env
 venv/
 env/
@@ -10,4 +10,3 @@ media/
 node_modules/
 dist/
 build/
-" 
