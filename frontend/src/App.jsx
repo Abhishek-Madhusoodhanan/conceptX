@@ -1,7 +1,86 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Upload, Send, FileText, Download, Loader2, CheckCircle, Database, X, Paperclip, Mic, Image } from 'lucide-react';
+import { Upload, Send, FileText, Download, Loader2, CheckCircle, Database, X, Paperclip, Mic } from 'lucide-react';
 import * as API from './services/api';
 import './App.css';
+
+// NEW: Structured Question Component with per-question answers and skip
+const QuestionList = ({ questions, onSkipAll, onSubmit }) => {
+  const [answers, setAnswers] = React.useState(() => {
+    const map = new Map();
+    (questions || []).forEach(q => map.set(q.id, ''));
+    return map;
+  });
+  const [skipped, setSkipped] = React.useState(() => new Set());
+
+  if (!questions || questions.length === 0) return null;
+
+  const handleChange = (id, val) => {
+    const next = new Map(answers);
+    next.set(id, val);
+    setAnswers(next);
+    if (val && skipped.has(id)) {
+      const s = new Set(skipped);
+      s.delete(id);
+      setSkipped(s);
+    }
+  };
+
+  const toggleSkip = (id) => {
+    const s = new Set(skipped);
+    if (s.has(id)) s.delete(id); else s.add(id);
+    setSkipped(s);
+    if (s.has(id)) {
+      const next = new Map(answers);
+      next.set(id, '');
+      setAnswers(next);
+    }
+  };
+
+  const handleProceed = () => {
+    const payload = questions.map(q => ({
+      id: q.id,
+      question: q.question,
+      answer: answers.get(q.id) || '',
+      skipped: skipped.has(q.id)
+    }));
+    onSubmit?.(payload);
+  };
+
+  return (
+    <div className="structured-questions">
+      <h4 className="questions-title">Structured Clarification Questions ({questions.length})</h4>
+      <ul className="questions-list">
+        {questions.map((q) => (
+          <li key={q.id} className="question-item">
+            <span className="question-text">{q.question}</span>
+            <span className="question-hint">💡 {q.why_asking}</span>
+            <textarea
+              className="input-textarea"
+              rows="3"
+              placeholder="Type your answer for this question..."
+              value={answers.get(q.id) || ''}
+              onChange={(e) => handleChange(q.id, e.target.value)}
+              disabled={skipped.has(q.id)}
+              style={{ marginTop: 8 }}
+            />
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 8 }}>
+              <button className="btn-skip" onClick={() => toggleSkip(q.id)}>
+                {skipped.has(q.id) ? 'Unskip' : 'Skip this question'}
+              </button>
+            </div>
+          </li>
+        ))}
+      </ul>
+      <div className="questions-actions">
+        <p className="helper-text-q">You can answer selectively. Skipped questions will be marked as such.</p>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button onClick={onSkipAll} className="btn-skip">Skip All</button>
+          <button onClick={handleProceed} className="send-button">Proceed</button>
+        </div>
+      </div>
+    </div>
+  );
+};
 
 function App() {
   const [messages, setMessages] = useState([]);
@@ -17,6 +96,7 @@ function App() {
   const [showSolutionModal, setShowSolutionModal] = useState(false);
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
+  const audioInputRef = useRef(null);
   const textareaRef = useRef(null);
 
   useEffect(() => {
@@ -38,6 +118,100 @@ function App() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
+  const handleSkipClarification = async () => {
+    if (!currentProject) return;
+
+    try {
+      setLoading(true);
+      console.log('🔍 Skipping clarification questions');
+      
+      // Send a message that signals the end of clarification
+      const skipMessage = "I have enough information for now, please proceed to the solution proposal stage.";
+      const updatedProject = await API.sendMessage(currentProject.id, skipMessage);
+
+      // The backend should handle clearing 'clarification_questions' and moving to 'processing'
+      setCurrentProject(updatedProject);
+      setMessages(updatedProject.messages);
+      setArtifacts(updatedProject.artifacts || []);
+      
+      // Check if a preview artifact was created
+      if (updatedProject.artifacts && updatedProject.artifacts.length > 0) {
+        console.log('📦 Found artifacts:', updatedProject.artifacts.length);
+        
+        // Get the most recent artifact
+        const artifacts = [...updatedProject.artifacts].sort((a, b) => 
+          new Date(b.created_at) - new Date(a.created_at)
+        );
+        
+        // Look specifically for summary preview artifacts first
+        let previewArtifact = artifacts.find(a => a.metadata?.type === 'summary_preview');
+        
+        // If no summary preview found, use the most recent artifact
+        if (!previewArtifact) {
+          previewArtifact = artifacts[0];
+        }
+        
+        console.log('🔍 Found artifact:', previewArtifact);
+        
+        if (previewArtifact) {
+          // Force UI update first to ensure state is clean
+          setArtifacts([...artifacts]);
+          
+          // Then set the selected artifact and show the panel
+          setTimeout(() => {
+            setSelectedArtifact(previewArtifact);
+            setShowArtifacts(true);
+            console.log('✅ Showing artifacts panel with:', previewArtifact.title);
+          }, 100);
+          
+          return; // Skip solution modal
+        }
+      }
+      
+      // Create a fallback preview if no artifact was found
+      if (updatedProject.status === 'processing') {
+        console.log('⚠️ No preview artifact found, creating fallback preview');
+        
+        // Create a fallback preview artifact
+        const fallbackContent = `# Project Summary Preview
+
+## Project Overview
+
+${currentProject.title}
+
+## Collected Information
+
+${messages.filter(m => m.role === 'user').map(m => m.content).join('\n\n')}
+
+## Next Steps
+
+Please proceed to select internal solutions to incorporate into your concept note.`;
+        
+        const fallbackArtifact = {
+          id: 'fallback-' + Date.now(),
+          title: `${currentProject.title} - Project Summary Preview`,
+          content: fallbackContent,
+          version: 'v0.1',
+          status: 'preview',
+          metadata: { type: 'summary_preview', editable: true },
+          created_at: new Date().toISOString()
+        };
+        
+        // Add the fallback artifact to the list
+        const updatedArtifacts = [fallbackArtifact, ...artifacts];
+        setArtifacts(updatedArtifacts);
+        setSelectedArtifact(fallbackArtifact);
+        setShowArtifacts(true);
+        
+        console.log('✅ Created fallback preview artifact');
+      }
+    } catch (error) {
+      console.error('Error skipping clarification:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const fetchInternalSolutions = async () => {
     try {
       const solutions = await API.getInternalSolutions();
@@ -54,6 +228,13 @@ function App() {
     setLoading(true);
     setUploadedFile(file);
 
+    // Show processing message immediately
+    const processingMessage = {
+      role: 'system',
+      content: `📄 Processing "${file.name}"... Please wait while I analyze the document.`
+    };
+    setMessages([processingMessage]);
+
     try {
       const title = file.name.replace(/\.[^/.]+$/, '');
       const project = await API.uploadDocument(file, title);
@@ -63,29 +244,52 @@ function App() {
     } catch (error) {
       console.error('Error uploading file:', error);
       alert('Failed to upload file');
+      setMessages([]);
     } finally {
       setLoading(false);
     }
   };
 
   const handleSend = async () => {
-    if (!input.trim() || loading || !currentProject) return;
+    if (!input.trim() || loading) return;
 
     const userMessage = input.trim();
     setInput('');
     setLoading(true);
 
     try {
+      // If no project yet, create from text first
+      if (!currentProject) {
+        const title = userMessage.split('\n')[0].slice(0, 60) || 'Untitled Project';
+        const project = await API.createProjectFromText(title, userMessage);
+        setCurrentProject(project);
+        setMessages(project.messages);
+        return; // wait for user to continue conversation
+      }
+
       const updatedProject = await API.sendMessage(currentProject.id, userMessage);
       setCurrentProject(updatedProject);
       setMessages(updatedProject.messages);
-
-      // Check if ready for solution selection
-      const userMessages = updatedProject.messages.filter(m => m.role === 'user');
-      if (userMessages.length >= 4 && !showSolutionModal) {
-        setTimeout(() => {
-          setShowSolutionModal(true);
-        }, 1000);
+      setArtifacts(updatedProject.artifacts || []);
+      
+      // Check if a preview artifact was created
+      if (updatedProject.artifacts && updatedProject.artifacts.length > 0) {
+        const artifacts = [...updatedProject.artifacts].sort((a, b) => 
+          new Date(b.created_at) - new Date(a.created_at)
+        );
+        
+        let previewArtifact = artifacts.find(a => a.metadata?.type === 'summary_preview');
+        if (!previewArtifact) {
+          previewArtifact = artifacts[0];
+        }
+        
+        if (previewArtifact) {
+          setArtifacts([...artifacts]);
+          setTimeout(() => {
+            setSelectedArtifact(previewArtifact);
+            setShowArtifacts(true);
+          }, 100);
+        }
       }
     } catch (error) {
       console.error('Error sending message:', error);
@@ -103,28 +307,59 @@ function App() {
   };
 
   const handleGenerateConceptNote = async () => {
-    if (!currentProject) return;
+    console.log('🔍 handleGenerateConceptNote called');
+    console.log('📁 Current project:', currentProject);
+    console.log('📦 Selected solutions:', selectedSolutions);
+    
+    if (!currentProject) {
+      console.error('❌ No current project!');
+      return;
+    }
 
     setLoading(true);
     setShowSolutionModal(false);
 
     try {
+      console.log('🔄 Generating concept note with solutions:', selectedSolutions);
       const updatedProject = await API.generateConceptNote(
         currentProject.id,
         selectedSolutions
       );
+      
+      console.log('📥 Received updated project:', updatedProject);
+      console.log('📦 Artifacts:', updatedProject.artifacts);
 
       setCurrentProject(updatedProject);
       setMessages(updatedProject.messages);
-      setArtifacts(updatedProject.artifacts);
+      setArtifacts(updatedProject.artifacts || []);
       
-      if (updatedProject.artifacts.length > 0) {
-        setSelectedArtifact(updatedProject.artifacts[0]);
-        setShowArtifacts(true);
+      if (updatedProject.artifacts && updatedProject.artifacts.length > 0) {
+        // Get the most recent artifact
+        const artifacts = [...updatedProject.artifacts].sort((a, b) => 
+          new Date(b.created_at) - new Date(a.created_at)
+        );
+        
+        const latestArtifact = artifacts[0];
+        console.log('🔍 Found artifact:', latestArtifact);
+        
+        if (latestArtifact) {
+          setSelectedArtifact(latestArtifact);
+          setShowArtifacts(true);
+          console.log('✅ Showing artifacts panel with:', latestArtifact.title);
+          
+          // Force UI update
+          setTimeout(() => {
+            console.log('🔄 Forcing UI refresh');
+            setArtifacts([...artifacts]); // Trigger re-render
+          }, 100);
+        }
+      } else {
+        console.error('❌ No artifacts found in response');
+        alert('No concept note was generated. Please try again.');
       }
     } catch (error) {
-      console.error('Error generating concept note:', error);
-      alert('Failed to generate concept note');
+      console.error('❌ Error generating concept note:', error);
+      alert('Failed to generate concept note: ' + (error.message || 'Unknown error'));
     } finally {
       setLoading(false);
     }
@@ -141,6 +376,13 @@ function App() {
       setMessages(updatedProject.messages);
       setArtifacts(updatedProject.artifacts);
       setSelectedArtifact(updatedProject.artifacts[0]);
+      setShowArtifacts(false); // hide panel after confirming
+      
+      // Automatically show solution selection modal after confirming preview
+      if (selectedArtifact.metadata?.type === 'summary_preview') {
+        console.log('✅ Preview confirmed, showing solution selection modal');
+        setShowSolutionModal(true);
+      }
     } catch (error) {
       console.error('Error confirming artifact:', error);
     }
@@ -157,8 +399,16 @@ function App() {
     }
   };
 
+  // Derived: structured clarification questions from project context
+  const clarificationQuestions =
+    currentProject &&
+    currentProject.context_data &&
+    currentProject.context_data.clarification_questions
+      ? currentProject.context_data.clarification_questions
+      : [];
+
   return (
-    <div className="app">
+    <div className={`app ${showArtifacts ? 'artifacts-open' : ''}`}>
       {/* Main Chat Area */}
       <div className="chat-container">
         {/* Header */}
@@ -168,17 +418,12 @@ function App() {
               <h1 className="header-title">Concept-X</h1>
               <p className="header-subtitle">AI Conversational Workflow System</p>
             </div>
-            {uploadedFile && (
-              <div className="uploaded-file-badge">
-                <FileText className="icon-sm" />
-                {uploadedFile.name}
-              </div>
-            )}
+            {uploadedFile && null}
           </div>
         </div>
 
         {/* Messages Area */}
-        <div className="messages">
+        <div className={`messages ${messages.length === 0 ? 'welcome-center' : ''}`}>
           <div className="messages-inner">
             {messages.length === 0 && (
               <div className="welcome">
@@ -207,6 +452,9 @@ function App() {
                       <span>Concept-X Assistant</span>
                     </div>
                   )}
+                  {msg.role === 'system' && msg.content.includes('Processing') && (
+                    <div className="processing-spinner"></div>
+                  )}
                   <p className="message-text">{msg.content}</p>
                   <div className="message-time">
                     {new Date(msg.timestamp).toLocaleTimeString()}
@@ -215,7 +463,115 @@ function App() {
               </div>
             ))}
 
-            {loading && (
+            {/* CORRECTED: Render structured clarification questions here, separate from the messages loop */}
+            {clarificationQuestions.length > 0 && (
+              <QuestionList 
+                questions={clarificationQuestions}
+                onSkipAll={handleSkipClarification}
+                onSubmit={async (answers) => {
+                  try {
+                    setLoading(true);
+                    console.log('📤 Submitting clarification answers:', answers);
+                    
+                    // Format with the special prefix the backend expects
+                    const content = `__CLARIFICATION_SUBMISSION__::${JSON.stringify(
+                      answers.reduce((acc, a) => {
+                        acc[a.id] = a.skipped ? 'NO_RESPONSE_SKIPPED' : a.answer;
+                        return acc;
+                      }, {})
+                    )}`;
+                    
+                    console.log('📤 Formatted content:', content);
+                    const updatedProject = await API.sendMessage(currentProject.id, content);
+                    console.log('📥 Received updated project:', updatedProject);
+                    console.log('📦 Artifacts:', updatedProject.artifacts);
+                    console.log('📊 Project status:', updatedProject.status);
+                    
+                    setCurrentProject(updatedProject);
+                    setMessages(updatedProject.messages);
+                    setArtifacts(updatedProject.artifacts || []);
+                    
+                    // Check if a preview artifact was created
+                    if (updatedProject.artifacts && updatedProject.artifacts.length > 0) {
+                      console.log('📦 Found artifacts:', updatedProject.artifacts.length);
+                      
+                      // Get the most recent artifact
+                      const artifacts = [...updatedProject.artifacts].sort((a, b) => 
+                        new Date(b.created_at) - new Date(a.created_at)
+                      );
+                      
+                      // Look specifically for summary preview artifacts first
+                      let previewArtifact = artifacts.find(a => a.metadata?.type === 'summary_preview');
+                      
+                      // If no summary preview found, use the most recent artifact
+                      if (!previewArtifact) {
+                        previewArtifact = artifacts[0];
+                      }
+                      
+                      console.log('🔍 Found artifact:', previewArtifact);
+                      
+                      if (previewArtifact) {
+                        // Force UI update first to ensure state is clean
+                        setArtifacts([...artifacts]);
+                        
+                        // Then set the selected artifact and show the panel
+                        setTimeout(() => {
+                          setSelectedArtifact(previewArtifact);
+                          setShowArtifacts(true);
+                          console.log('✅ Showing artifacts panel with:', previewArtifact.title);
+                        }, 100);
+                        
+                        return; // Skip solution modal
+                      }
+                    }
+                    
+                    // Create a fallback preview if no artifact was found
+                    if (updatedProject.status === 'processing') {
+                      console.log('⚠️ No preview artifact found, creating fallback preview');
+                      
+                      // Create a fallback preview artifact
+                      const fallbackContent = `# Project Summary Preview
+
+## Project Overview
+
+${currentProject.title}
+
+## Collected Information
+
+${messages.filter(m => m.role === 'user').map(m => m.content).join('\n\n')}
+
+## Next Steps
+
+Please proceed to select internal solutions to incorporate into your concept note.`;
+                      
+                      const fallbackArtifact = {
+                        id: 'fallback-' + Date.now(),
+                        title: `${currentProject.title} - Project Summary Preview`,
+                        content: fallbackContent,
+                        version: 'v0.1',
+                        status: 'preview',
+                        metadata: { type: 'summary_preview', editable: true },
+                        created_at: new Date().toISOString()
+                      };
+                      
+                      // Add the fallback artifact to the list
+                      const updatedArtifacts = [fallbackArtifact, ...artifacts];
+                      setArtifacts(updatedArtifacts);
+                      setSelectedArtifact(fallbackArtifact);
+                      setShowArtifacts(true);
+                      
+                      console.log('✅ Created fallback preview artifact');
+                    }
+                  } catch (err) {
+                    console.error('❌ Submitting answers failed', err);
+                  } finally {
+                    setLoading(false);
+                  }
+                }}
+              />
+            )}
+
+            {loading && currentProject && (
               <div className="loader">
                 <div className="loader-box">
                   <Loader2 className="spinner" />
@@ -233,6 +589,21 @@ function App() {
           <div className="input-inner">
             <div className="input-row">
               <div className="input-actions">
+                {currentProject && currentProject.artifacts && currentProject.artifacts.length > 0 && (
+                  <button
+                    onClick={() => {
+                      console.log('🔍 Debug: Opening artifact panel');
+                      const artifact = currentProject.artifacts[0];
+                      setSelectedArtifact(artifact);
+                      setShowArtifacts(true);
+                    }}
+                    className="icon-button"
+                    title="Debug: Show Artifact"
+                    style={{ background: '#f0f9ff' }}
+                  >
+                    <FileText className="icon-md" style={{ color: '#3b82f6' }} />
+                  </button>
+                )}
                 <button
                   onClick={() => fileInputRef.current?.click()}
                   disabled={loading}
@@ -251,17 +622,36 @@ function App() {
                 
                 <button
                   className="icon-button"
-                  title="Upload image"
-                >
-                  <Image className="icon-md" />
-                </button>
-                
-                <button
-                  className="icon-button"
                   title="Voice input"
+                  onClick={() => audioInputRef.current?.click()}
                 >
                   <Mic className="icon-md" />
                 </button>
+                <input
+                  ref={audioInputRef}
+                  type="file"
+                  accept=".mp3,.wav,.m4a,.flac,.aac,.ogg,audio/*"
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    try {
+                      setLoading(true);
+                      const res = await API.transcribeAudio(file);
+                      if (res && res.text) {
+                        setInput(prev => (prev ? prev + '\n' : '') + res.text);
+                      } else if (res && res.error) {
+                        alert(res.error);
+                      }
+                    } catch (err) {
+                      console.error('Audio transcribe failed', err);
+                      alert('Failed to transcribe audio');
+                    } finally {
+                      setLoading(false);
+                      e.target.value = '';
+                    }
+                  }}
+                  className="visually-hidden"
+                />
               </div>
 
               <textarea
@@ -277,12 +667,12 @@ function App() {
                 }}
                 placeholder="Type your response..."
                 className="input-textarea"
-                disabled={loading || !currentProject}
+                disabled={loading}
               />
 
               <button
                 onClick={handleSend}
-                disabled={!input.trim() || loading || !currentProject}
+                disabled={!input.trim() || loading}
                 className="send-button"
               >
                 <Send className="icon-md" />
@@ -331,10 +721,14 @@ function App() {
             
             <div className="modal-footer">
               <button
-                onClick={handleGenerateConceptNote}
+                onClick={() => {
+                  console.log('👆 Generate button clicked!');
+                  handleGenerateConceptNote();
+                }}
                 className="btn-primary btn-block"
+                disabled={loading}
               >
-                Generate Concept Note ({selectedSolutions.length} selected)
+                {loading ? 'Generating...' : `Generate Concept Note (${selectedSolutions.length} selected)`}
               </button>
             </div>
           </div>
@@ -343,7 +737,7 @@ function App() {
 
       {/* Artifacts Panel */}
       {showArtifacts && selectedArtifact && (
-        <div className="artifacts-panel">
+        <div className={`artifacts-panel ${showArtifacts ? 'open' : ''}`}>
           <div className="artifacts-header">
             <div className="artifacts-header-row">
               <h2 className="artifacts-title">
@@ -371,9 +765,38 @@ function App() {
               <span className={`status-pill ${selectedArtifact.status}`}>
                 {selectedArtifact.status === 'confirmed' ? '✓ Confirmed' : '⏳ Preview'}
               </span>
+              <button 
+                onClick={() => {
+                  console.log('🔍 Debug - Artifact details:', selectedArtifact);
+                  console.log('🔍 Debug - Artifact metadata:', selectedArtifact.metadata);
+                  console.log('🔍 Debug - All artifacts:', artifacts);
+                }}
+                style={{ background: 'none', border: 'none', color: '#888', fontSize: '12px', cursor: 'pointer' }}
+              >
+                Debug
+              </button>
             </div>
             
+            {/* Always show the Proceed to Solution Selection button for preview artifacts */}
             {selectedArtifact.status === 'preview' && (
+              <button
+                onClick={() => {
+                  console.log('🔍 Proceeding to solution selection');
+                  setShowArtifacts(false);
+                  setTimeout(() => {
+                    setShowSolutionModal(true);
+                    console.log('✅ Solution modal opened');
+                  }, 100);
+                }}
+                className="btn-confirm btn-block"
+              >
+                <CheckCircle className="icon-md" />
+                Proceed to Solution Selection
+              </button>
+            )}
+            
+            {/* Confirm button for final concept notes */}
+            {selectedArtifact.status === 'preview' && selectedArtifact.metadata?.type === 'concept_note' && (
               <button
                 onClick={handleConfirmArtifact}
                 className="btn-confirm btn-block"

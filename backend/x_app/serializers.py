@@ -9,11 +9,13 @@ from .models import (
 
 
 class InternalSolutionSerializer(serializers.ModelSerializer):
+    relevance_score = serializers.FloatField(required=False, read_only=True)
+    
     class Meta:
         model = InternalSolution
         fields = [
             'id', 'name', 'description', 'technical_stack',
-            'features', 'documentation', 'created_at'
+            'features', 'documentation', 'created_at', 'relevance_score'
         ]
         read_only_fields = ['id', 'created_at']
 

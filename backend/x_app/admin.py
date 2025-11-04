@@ -199,3 +199,21 @@ class Command(BaseCommand):
         self.stdout.write(
             self.style.SUCCESS('Successfully seeded internal solutions!')
         )
+
+
+# Add bulk upload function
+def upload_solution_from_pdf(pdf_path: str, name: str, description: str):
+    """Helper function to upload PDF solutions"""
+    from .utils import vector_store
+    
+    try:
+        data = vector_store.create_embedding_from_pdf(pdf_path, name, description)
+        solution = InternalSolution.objects.create(**data)
+        print(f"✅ Created: {solution.name}")
+        
+        # Rebuild index
+        vector_store.build_index()
+        return solution
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        return None

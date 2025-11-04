@@ -23,6 +23,14 @@ export const uploadDocument = async (file, title) => {
   return response.data;
 };
 
+export const createProjectFromText = async (title, description) => {
+  const response = await api.post('/project/from-text/', {
+    title,
+    description,
+  });
+  return response.data;
+};
+
 export const sendMessage = async (projectId, content) => {
   const response = await api.post('/message/', {
     project_id: projectId,
@@ -54,6 +62,15 @@ export const updateArtifact = async (artifactId, updates) => {
 
 export const getProject = async (projectId) => {
   const response = await api.get(`/project/${projectId}/`);
+  return response.data;
+};
+
+export const transcribeAudio = async (file) => {
+  const formData = new FormData();
+  formData.append('audio', file);
+  const response = await axios.post(`${API_BASE_URL}/transcribe/`, formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
   return response.data;
 };
 

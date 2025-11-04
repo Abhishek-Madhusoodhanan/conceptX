@@ -9,8 +9,11 @@ router.register(r'solutions', views.InternalSolutionViewSet, basename='solution'
 urlpatterns = [
     path('', include(router.urls)),
     path('upload/', views.upload_document, name='upload-document'),
+    path('project/from-text/', views.create_project_from_text, name='create-project-from-text'),
+    path('transcribe/', views.transcribe_audio, name='transcribe-audio'),
     path('message/', views.send_message, name='send-message'),
     path('generate/', views.generate_concept_note, name='generate-concept-note'),
     path('artifact/update/', views.update_artifact, name='update-artifact'),
+    path('clarify-questions/', views.clarify_questions, name='clarify-questions'),
     path('project/<int:project_id>/', views.get_project, name='get-project'),
 ]
