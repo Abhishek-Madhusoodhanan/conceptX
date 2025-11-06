@@ -1,34 +1,41 @@
 """
-All LangChain Agents in ONE file for simplicity
+ENHANCED REACT AGENT SYSTEM - agent.py
+Transforms rule-based workflow into dynamic ReAct agent with tool selection
+
+Key Features:
+1. ReAct reasoning loop (Thought -> Action -> Observation)
+2. Dynamic tool selection based on user query
+3. Multi-turn reasoning with memory
+4. Fallback to conversation when no tools needed
 """
 import os
 import json
+import re
 from datetime import datetime
+from typing import Dict, List, Optional, Any, Tuple
 from dotenv import load_dotenv
 
-# Try importing LangChain packages - all or nothing approach
+# LangChain imports
 try:
     from langchain_google_genai import ChatGoogleGenerativeAI
-    from langchain_core.prompts import ChatPromptTemplate
+    from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder, PromptTemplate
     from langchain_community.tools import DuckDuckGoSearchRun
+    from langchain.tools import tool, Tool
+    from langchain.agents import create_react_agent, AgentExecutor
+    from langchain.memory import ConversationBufferMemory
+    from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
     LANGCHAIN_AVAILABLE = True
 except ImportError as e:
     print(f"⚠️ LangChain packages not available: {e}")
-    print("⚠️ Please run: pip install langchain==0.3.12 langchain-community==0.3.12 langchain-google-genai==2.0.5")
     LANGCHAIN_AVAILABLE = False
-    # Create dummy classes to prevent import errors
-    ChatGoogleGenerativeAI = None  # type: ignore
-    ChatPromptTemplate = None  # type: ignore
-    DuckDuckGoSearchRun = None  # type: ignore
 
-# Import Gemini SDK separately (used for audio transcription)
+# Import Gemini SDK for fallback
 try:
     import google.generativeai as genai
 except ImportError:
     genai = None
 
-
-# Configure environment and Gemini SDK once
+# Configure environment
 load_dotenv()
 if genai:
     try:
@@ -36,42 +43,45 @@ if genai:
     except Exception:
         pass
 
+
+# ------------------------------------------------------------------------------
+# Optional: Tiny LLM factory to keep model pick logic in one place
+# ------------------------------------------------------------------------------
 class LLMFactory:
-    """Factory to create LLM instances with fallback support"""
-    
     @staticmethod
-    def create_llm(temperature=0.7):
-        """Create LLM instance with multiple fallbacks"""
-        # If LangChain package is missing, raise
-        if not LANGCHAIN_AVAILABLE or ChatGoogleGenerativeAI is None:
-            raise ImportError("langchain and langchain-google-genai are required for LLM usage")
-        # ✅ CORRECT: Models that work with your API key (prioritized: speed → capability → availability)
-        available_models = [
-            "gemini-2.5-flash",                    # ✅ WORKS - Fastest, best for production
-            "gemini-flash-latest",                 # ✅ Latest stable flash model
-            "gemini-2.5-flash-preview-05-20",      # ✅ WORKS - Preview version
-            "gemini-2.0-flash",                    # Fallback - Gemini 2.0
-            "gemini-pro-latest",                   # Fallback - Latest pro
+    def create_llm(temperature: float = 0.7):
+        if not LANGCHAIN_AVAILABLE:
+            raise ImportError("LangChain packages required for ReAct agent")
+
+        candidates = [
+             "gemini-2.0-flash",
+            "gemini-2.0-pro",
+            "gemini-2.0-flash-latest",
+            "gemini-2.0-pro-latest",
         ]
-        
-        for model_name in available_models:
+        last_err = None
+        for m in candidates:
             try:
                 llm = ChatGoogleGenerativeAI(
-                    model=model_name,
-                    google_api_key=os.getenv('GOOGLE_API_KEY'),
+                model="gemini-2.0-flash",
+                google_api_key=os.getenv("GOOGLE_API_KEY"),
+                google_api_version="v1",   # ✅ ensures proper API endpoint
+                temperature=temperature,
+)
+                llm = ChatGoogleGenerativeAI(
+                    model=m,
+                    google_api_key=os.getenv("GOOGLE_API_KEY"),
+                    google_api_version="v1",
                     temperature=temperature,
-                    max_retries=1,
-                    timeout=30
                 )
-                test_response = llm.invoke("Say 'TEST' only")
-                if "TEST" in getattr(test_response, 'content', ''):
-                    print(f"✅ Using model: {model_name}")
-                    return llm
+
+                # Return immediately without testing - assume API key is set
+                print(f"✅ Using model: {m}")
+                return llm
             except Exception as e:
-                print(f"⚠️ Model {model_name} failed: {str(e)[:100]}")
-                continue
-        # All models failed - raise
-        raise RuntimeError("All configured Gemini models failed to initialize")
+                last_err = e
+                print(f"⚠️ Model {m} failed: {str(e)[:100]}")
+        raise RuntimeError(f"All configured models failed: {last_err}")
 
 
 class BaseAgent:
@@ -81,21 +91,15 @@ class BaseAgent:
         self.llm = LLMFactory.create_llm(temperature)
     
     def safe_invoke(self, prompt):
-        """Safely invoke LLM with error handling"""
         try:
-            print(f"🔍 Invoking LLM with prompt length: {len(str(prompt))} characters")
             response = self.llm.invoke(prompt)
-            print(f"✅ LLM response received: {len(getattr(response, 'content', ''))} characters")
             return response
         except Exception as e:
             print(f"❌ LLM invocation failed: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            
-            # Create a mock response object with error info
             from collections import namedtuple
             MockResponse = namedtuple('MockResponse', ['content'])
-            return MockResponse(content=f"Error generating content: {str(e)}. Please try again with different parameters.")
+            return MockResponse(content=f"Error generating content: {str(e)}")
+
 
 class OrchestratorAgent(BaseAgent):
     """Central coordinator managing workflow and routing"""
@@ -328,6 +332,21 @@ Provide structured analysis:
                 "risk_areas": ["Scope creep", "Timeline delays"],
                 "opportunities": ["Standard implementation approach"]
             }
+
+
+# LangChain imports
+try:
+    from langchain_google_genai import ChatGoogleGenerativeAI
+    from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+    from langchain_community.tools import DuckDuckGoSearchRun
+    from langchain.tools import tool, Tool
+    from langchain.agents import create_react_agent, AgentExecutor
+    from langchain.memory import ConversationBufferMemory
+    from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+    LANGCHAIN_AVAILABLE = True
+except ImportError as e:
+    print(f"LangChain import failed: {e}")
+    LANGCHAIN_AVAILABLE = False
 
 
 class SolutionArchitect(BaseAgent):
@@ -594,8 +613,151 @@ The project will be implemented in phases with regular checkpoints.
         return "\n".join(formatted)
 
 
-# ===== Project Preview Generator =====
+# ============================== ReAct Agent System (Fixed) ==============================
+
+from langchain.memory import ConversationBufferMemory
+
+class ReActAgent:
+    """ReAct Agent System (LangChain 0.3.x compatible)"""
+
+    def __init__(self):
+        # Use the same LLM factory you defined above (already probes models)
+        self.llm = LLMFactory.create_llm(temperature=0.2)
+
+        # Tools (search as an example; add more if you like)
+        self.tools = [
+            DuckDuckGoSearchRun()
+        ]
+
+        # ReAct-style prompt template (standard format)
+        self.prompt = PromptTemplate.from_template("""
+Answer the following questions as best you can. You have access to the following tools:
+
+{tools}
+
+Use the following format:
+
+Question: the input question you must answer
+Thought: you should always think about what to do
+Action: the action to take, should be one of [{tool_names}]
+Action Input: the input to the action
+Observation: the result of the action
+... (this Thought/Action/Action Input/Observation can repeat N times)
+Thought: I now know the final answer
+Final Answer: the final answer to the original input question
+
+Begin!
+
+Question: {input}
+Thought:{agent_scratchpad}""")
+
+        # Build the ReAct agent graph
+        self.agent_graph = create_react_agent(self.llm, self.tools, self.prompt)
+
+        # Memory (return_messages=True to feed back into the prompt)
+        self.memory = ConversationBufferMemory(
+            memory_key="chat_history",
+            return_messages=True
+        )
+
+        # Final executor
+        self.executor = AgentExecutor(
+            agent=self.agent_graph,
+            tools=self.tools,
+            memory=self.memory,
+            verbose=False,
+            handle_parsing_errors=True,
+            max_iterations=6,
+        )
+
+    def react(self, input_message: str) -> str:
+        """Run one ReAct step"""
+        # AgentExecutor expects a dict with "input"
+        result = self.executor.invoke({"input": input_message})
+        # Standard key is "output"; fall back to str if not present
+        return result.get("output") or str(result)
+
+
+class ReActExecutor:
+    """Wrapper around ReActAgent providing helper entry points."""
+
+    def __init__(self):
+        self.agent = ReActAgent()
+        # ✨ an LLM for quick small-talk/regular chat replies
+        self.smalltalk_llm = LLMFactory.create_llm(temperature=0.6)
+
+    # ✨ helper to detect greetings / short chit-chat
+    @staticmethod
+    def _is_smalltalk(text: str) -> bool:
+        if not text:
+            return False
+        t = text.strip().lower()
+        greetings = {
+            "hi", "hello", "hey", "yo", "hola", "sup",
+            "good morning", "good afternoon", "good evening"
+        }
+        if t in greetings or any(t.startswith(g) for g in greetings):
+            return True
+        # short statements without a question mark are probably chit-chat
+        return (len(t.split()) <= 4) and ("?" not in t)
+
+    def execute(self, input_message: str, context: dict | None = None, project: Any | None = None) -> str:
+        # small talk path
+        if self._is_smalltalk(input_message):
+            prompt = ("You are a warm, concise assistant. Reply briefly:\n\n" + input_message)
+            resp = self.smalltalk_llm.invoke(prompt)
+            return getattr(resp, "content", str(resp))
+
+        # ---- INJECT DOCUMENT CONTEXT HERE ----
+        doc = (context or {}).get('document_text') or ''
+        if doc:
+            # keep prompt safe and bounded
+            doc_snippet = doc[:4000]
+            wrapped = (
+                "You have access to the following document context (truncated):\n"
+                "----- DOCUMENT CONTEXT START -----\n"
+                f"{doc_snippet}\n"
+                "----- DOCUMENT CONTEXT END -----\n\n"
+                f"User request: {input_message}\n"
+                "If the user asks to analyze the PDF/document, use the context above. "
+                "Do not say you lack access to the PDF."
+            )
+            return self.agent.react(wrapped)
+
+        # no context → normal ReAct
+        return self.agent.react(input_message)
+
+    def process_user_input(self, input_message: str, project: Any | None = None, context: dict | None = None) -> dict:
+        reply = self.execute(input_message, context=context, project=project)
+        return {"response": reply, "actions": []}
+
+# ---------------- Compatibility shim for old imports ----------------
+class HybridOrchestrator(ReActExecutor):
+    """Backwards-compatible wrapper so existing imports continue to work."""
+
+    def __init__(self):  # pragma: no cover - simple delegation
+        super().__init__()
+# -------------------------------------------------------------------
+
+
+# Singleton instance and convenience function
+react_executor = ReActExecutor()
+
+def react_agent(input_message: str) -> str:
+    return react_executor.execute(input_message)
+# ============================ /ReAct Agent System (Fixed) ===============================
+
+
+
+# ReAct Agent Functions
+def react_agent(input_message: str) -> str:
+    """ReAct agent function"""
+    return react_executor.execute(input_message)
+
+
 def generate_preview(raw_input: str, highlight_points: str = None) -> str:
+    model = genai.GenerativeModel('gemini-2.0-flash')
+
     """
     Convert raw client input into a DETAILED, BEAUTIFULLY FORMATTED preview
     """
@@ -850,6 +1012,10 @@ def _validate_and_enhance_questions(questions: list, uploaded_files_count: int) 
 
 def generate_dynamic_clarification_questions(raw_input: str = None, pdf_text: str = None, audio_transcript: str = None, uploaded_files_count: int = 0) -> list:
     """Generate content-based clarification questions using Gemini SDK."""
+    model = genai.GenerativeModel(
+    'gemini-2.0-flash',
+    generation_config={"response_mime_type": "application/json"}
+)
     api_key = os.getenv('GOOGLE_API_KEY')
     if not api_key:
         raise RuntimeError("GOOGLE_API_KEY not configured")

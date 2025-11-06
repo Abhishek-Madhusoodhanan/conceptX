@@ -62,7 +62,7 @@ body {
 
 /* Header */
 .header {
-  background: linear-gradient(90deg, #2563eb, #4f46e5);
+  background: linear-gradient(90deg, #eb2525, #e54646);
   color: #fff;
   padding: 16px;
   box-shadow: 0 10px 20px rgba(0,0,0,0.08);
@@ -130,7 +130,7 @@ body {
   width: 80px;
   height: 80px;
   margin: 0 auto 24px;
-  background: linear-gradient(135deg, #3b82f6, #6366f1);
+  background: linear-gradient(135deg, #f63b3b, #f16363);
   border-radius: 16px;
   display: flex;
   align-items: center;
